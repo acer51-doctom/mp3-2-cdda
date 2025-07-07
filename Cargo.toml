@@ -10,3 +10,4 @@ symphonia = { version = "0.5", features = ["mp3"] }
 hound = "3.5"
 rubato = "0.12"
 single-instance = "0.3"
+anyhow = "1.0.98"
