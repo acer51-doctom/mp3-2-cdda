@@ -1,4 +1,4 @@
-use log::{LevelFilter, info, error, warn, debug};
+use log::{LevelFilter};
 use env_logger::Builder;
 use std::io::Write;
 

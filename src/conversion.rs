@@ -1,12 +1,11 @@
-#[macro_use]
-mod logging;
+use crate::logging::*; // Import all macros from logging module
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
-use std::io::Read; // Added for ChildStderr::read
+use std::io::Read;
 
 pub fn convert_files(paths: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Result<()> {
     if paths.is_empty() {
