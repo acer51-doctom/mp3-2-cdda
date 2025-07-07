@@ -1,5 +1,5 @@
 #[macro_use]
-mod conversion;
+mod conversion; // Added #[macro_use] to propagate macros to conversion module
 #[macro_use]
 mod logging;
 
