@@ -8,6 +8,6 @@ eframe = "0.27"
 rfd = "0.14"
 symphonia = { version = "0.5", features = ["mp3"] }
 hound = "3.5"
-rubato = "0.12"
+rubato = "0.14"
 single-instance = "0.3"
 anyhow = "1.0.98"

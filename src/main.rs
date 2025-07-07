@@ -1,139 +1,165 @@
-use eframe::{egui, epi};
+mod conversion;
+
+use eframe::{egui, App, Frame};
 use rfd::FileDialog;
-use std::path::{PathBuf};
-use std::fs;
+use single_instance::SingleInstance;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use single_instance::SingleInstance;
 
-// Audio libs
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::default::{get_probe};
-use std::fs::File;
-
-struct App {
+struct ConverterApp {
     selected_files: Vec<PathBuf>,
-    status: String,
-    is_working: bool,
-    cancel_requested: Arc<Mutex<bool>>,
+    is_processing: bool,
+    progress_message: String,
+    last_error: Option<String>,
+    cancel_flag: Arc<Mutex<bool>>,
+    instance_guard: SingleInstance,
 }
 
-impl Default for App {
+impl Default for ConverterApp {
     fn default() -> Self {
         Self {
             selected_files: Vec::new(),
-            status: "Select files to convert.".to_string(),
-            is_working: false,
-            cancel_requested: Arc::new(Mutex::new(false)),
+            is_processing: false,
+            progress_message: "Ready to convert MP3 files to CDDA".to_string(),
+            last_error: None,
+            cancel_flag: Arc::new(Mutex::new(false)),
+            instance_guard: SingleInstance::new("mp3_to_cdda_converter").unwrap(),
         }
     }
 }
 
-impl epi::App for App {
-    fn name(&self) -> &str {
-        "MP3 to CDDA Converter"
+impl ConverterApp {
+    fn select_files(&mut self) {
+        if let Some(files) = FileDialog::new()
+            .add_filter("MP3 Files", &["mp3"])
+            .pick_files()
+        {
+            self.selected_files = files;
+            self.progress_message = format!("Selected {} files", self.selected_files.len());
+            self.last_error = None;
+        }
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut epi::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("MP3 to CDDA Converter");
+    fn start_conversion(&mut self) {
+        if self.selected_files.is_empty() {
+            self.last_error = Some("No files selected".to_string());
+            return;
+        }
 
-            if !self.is_working {
-                if ui.button("Select MP3 Files").clicked() {
-                    if let Some(files) = FileDialog::new()
-                        .add_filter("MP3 audio", &["mp3"])
-                        .pick_files()
-                    {
-                        self.selected_files = files;
-                        self.status = format!("Selected {} files.", self.selected_files.len());
-                    }
-                }
+        self.is_processing = true;
+        self.progress_message = "Starting conversion...".to_string();
+        *self.cancel_flag.lock().unwrap() = false;
 
-                if !self.selected_files.is_empty() {
-                    if ui.button("Convert to CDDA").clicked() {
-                        self.is_working = true;
-                        self.status = "Starting conversion...".to_string();
-                        *self.cancel_requested.lock().unwrap() = false;
+        let files = self.selected_files.clone();
+        let cancel_flag = Arc::clone(&self.cancel_flag);
+        let status_sender = self.create_status_sender();
 
-                        let files = self.selected_files.clone();
-                        let cancel_flag = Arc::clone(&self.cancel_requested);
-
-                        // Run conversion in a separate thread so UI stays responsive.
-                        thread::spawn(move || {
-                            if let Err(e) = convert_files(&files, cancel_flag) {
-                                println!("Conversion error: {}", e);
-                            }
-                        });
-                    }
-                }
-
-                ui.label(&self.status);
+        thread::spawn(move || {
+            if let Err(e) = conversion::convert_files(files, cancel_flag) {
+                status_sender.send(Err(e.to_string())).ok();
             } else {
-                ui.add(egui::Spinner::new());
-                ui.label(egui::RichText::new("Working on your files... Hang tight!").strong());
+                status_sender.send(Ok("Conversion complete!".to_string())).ok();
+            }
+        });
+    }
 
-                if ui.button("Cancel").clicked() {
-                    *self.cancel_requested.lock().unwrap() = true;
-                    self.status = "Cancel requested.".to_string();
+    fn create_status_sender(&self) -> std::sync::mpsc::Sender<Result<String, String>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let ctx = eframe::egui::Context::default();
+
+        ctx.request_repaint();
+        std::thread::spawn(move || {
+            if let Ok(result) = receiver.recv() {
+                ctx.request_repaint();
+                match result {
+                    Ok(msg) => println!("Success: {}", msg),
+                    Err(err) => eprintln!("Error: {}", err),
                 }
             }
         });
 
-        ctx.request_repaint(); // Keep UI updating while working.
+        sender
+    }
+}
+
+impl App for ConverterApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("MP3 to CDDA Converter");
+
+            if let Some(err) = &self.last_error {
+                ui.colored_label(egui::Color32::RED, err);
+            }
+
+            if !self.is_processing {
+                self.show_file_selection(ui);
+            } else {
+                self.show_conversion_progress(ui);
+            }
+
+            ui.separator();
+            ui.label(&self.progress_message);
+        });
+
+        if !self.instance_guard.is_single() {
+            self.last_error = Some("Another instance is already running".to_string());
+        }
+
+        ctx.request_repaint();
+    }
+}
+
+impl ConverterApp {
+    fn show_file_selection(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            if ui.button("📁 Select MP3 Files").clicked() {
+                self.select_files();
+            }
+
+            if !self.selected_files.is_empty() {
+                ui.separator();
+                ui.label("Selected files:");
+                
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for file in &self.selected_files {
+                            ui.label(file.file_name().unwrap().to_string_lossy());
+                        }
+                    });
+
+                if ui.button("🔃 Convert to CDDA").clicked() {
+                    self.start_conversion();
+                }
+            }
+        });
+    }
+
+    fn show_conversion_progress(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add(egui::Spinner::new().size(40.0));
+            ui.label("Converting files...");
+            
+            if ui.button("❌ Cancel").clicked() {
+                *self.cancel_flag.lock().unwrap() = true;
+                self.progress_message = "Cancelling...".to_string();
+            }
+        });
     }
 }
 
 fn main() {
-    // Allow only one instance.
-    let instance = SingleInstance::new("mp3_to_cdda_gui_instance").unwrap();
-    if !instance.is_single() {
-        println!("Another instance is already running.");
-        return;
-    }
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 500.0])
+            .with_min_inner_size([300.0, 400.0]),
+        ..Default::default()
+    };
 
-    let options = eframe::NativeOptions::default();
     eframe::run_native(
         "MP3 to CDDA Converter",
         options,
-        Box::new(|_cc| Box::new(App::default())),
+        Box::new(|_cc| Box::new(ConverterApp::default())),
     );
-}
-
-fn convert_files(files: &Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> anyhow::Result<()> {
-    for file_path in files {
-        if *cancel_flag.lock().unwrap() {
-            println!("Conversion cancelled by user.");
-            break;
-        }
-
-        println!("Processing: {:?}", file_path);
-
-        let file = File::open(&file_path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let probed = get_probe().format(
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-            mss,
-            &Default::default(),
-        )?;
-
-        let mut format = probed.format;
-        let track = format
-            .default_track()
-            .ok_or_else(|| anyhow::anyhow!("No default track found"))?;
-
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())?;
-
-        // Here you’d decode + resample + write WAV with `hound` + `rubato`.
-        // For now, just sleep to simulate work.
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    println!("Conversion done.");
-    Ok(())
 }
