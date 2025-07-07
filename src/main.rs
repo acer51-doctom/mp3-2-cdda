@@ -151,7 +151,8 @@ impl ConverterApp {
 }
 
 fn main() {
-    env_logger::init();
+    env_logger::init(); // Initialize logging
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([400.0, 500.0])
@@ -159,9 +160,12 @@ fn main() {
         ..Default::default()
     };
 
-    eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "MP3 to CDDA Converter",
         options,
         Box::new(|_cc| Box::new(ConverterApp::default())),
-    );
+    ) {
+        log::error!("Failed to run eframe application: {:?}", e);
+        std::process::exit(1);
+    }
 }
