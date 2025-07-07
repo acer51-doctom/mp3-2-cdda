@@ -1,4 +1,5 @@
 mod conversion;
+mod logging;
 
 use eframe::{egui, App, Frame};
 use rfd::FileDialog;
@@ -6,7 +7,6 @@ use single_instance::SingleInstance;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use env_logger;
 
 struct ConverterApp {
     selected_files: Vec<PathBuf>,
@@ -151,7 +151,7 @@ impl ConverterApp {
 }
 
 fn main() {
-    env_logger::init(); // Initialize logging
+    logging::initialize_logger(); // Initialize custom logger
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -165,7 +165,7 @@ fn main() {
         options,
         Box::new(|_cc| Box::new(ConverterApp::default())),
     ) {
-        log::error!("Failed to run eframe application: {:?}", e);
+        log_error!("Failed to run eframe application: {:?}", e);
         std::process::exit(1);
     }
 }

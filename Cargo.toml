@@ -4,13 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.27"
-rfd = "0.14"
-symphonia = { version = "0.5", features = ["mp3"] }
-hound = "3.5"
-rubato = "0.14"
-single-instance = "0.3"
-anyhow = "1.0.98"
+anyhow = "1.0"
 log = "0.4"
 env_logger = "0.10"
 walkdir = "2.3"
+eframe = "0.22"
+rfd = "0.11"
+single_instance = "0.3"
+chrono = "0.4"

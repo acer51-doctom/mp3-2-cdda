@@ -1,18 +1,8 @@
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::io::BufWriter;
-
 use anyhow::{Context, Result};
-use log::{debug, error, info, warn};
-use rubato::{Resampler, SincFixedIn, WindowFunction, SincInterpolationParameters, SincInterpolationType};
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer, SignalSpec};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::default::get_probe;
 use walkdir::WalkDir;
 
 pub fn convert_files(paths: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Result<()> {
@@ -20,88 +10,68 @@ pub fn convert_files(paths: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Resu
         return Ok(());
     }
 
-    for path in paths {
+    paths.into_iter().for_each(|path| {
         if *cancel_flag.lock().unwrap() {
-            info!("Conversion cancelled by user.");
-            break;
+            log_info!("Conversion cancelled by user at process level.");
+            return;
         }
 
         let files_to_process = if path.is_dir() {
-            info!("Processing folder: {:?}", path);
+            log_info!("Processing folder: {:?}", path);
             let mut files = Vec::new();
-            for entry in WalkDir::new(&path)
+            for entry in std::fs::read_dir(&path)
                 .into_iter()
+                .flatten()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
+                .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
             {
                 let file_path = entry.path();
                 if file_path.extension().and_then(|s| s.to_str()) == Some("mp3") {
-                    files.push(file_path.to_path_buf());
+                    files.push(file_path);
                 }
             }
             files
         } else if path.extension().and_then(|s| s.to_str()) == Some("mp3") {
-            info!("Processing single file: {:?}", path);
-            vec![path.clone()] // Clone path to avoid move
+            log_info!("Processing single file: {:?}", path);
+            vec![path]
         } else {
-            warn!("Skipping non-MP3 file or directory: {:?}", path);
-            continue;
+            log_warn!("Skipping non-MP3 file or directory: {:?}", path);
+            return;
         };
 
         if files_to_process.is_empty() {
-            warn!("No MP3 files found in {:?}", path);
-            continue;
+            log_warn!("No MP3 files found in {:?}", path);
+            return;
         }
 
         let parent_folder = path.parent().unwrap_or_else(|| Path::new("."));
         let output_folder = parent_folder.join("CDDA_Converted");
-        fs::create_dir_all(&output_folder)
-            .context("Failed to create output directory")?;
+        if let Err(e) = fs::create_dir_all(&output_folder) {
+            log_error!("Failed to create output directory: {:?}", e);
+            return;
+        }
 
         for file_path in files_to_process {
             if *cancel_flag.lock().unwrap() {
-                info!("Conversion cancelled by user.");
-                break;
+                log_info!("Conversion cancelled by user before processing file: {:?}", file_path);
+                return;
             }
 
-            info!("Starting conversion of: {:?}", file_path);
-            if let Err(e) = process_file(&file_path, &output_folder, &cancel_flag) {
-                error!("Failed to process {}: {:?}", file_path.display(), e);
+            let start_time = std::time::Instant::now();
+            log_info!("Starting conversion of: {:?}", file_path);
+            if let Err(e) = convert_with_ffmpeg(&file_path, &output_folder, &cancel_flag) {
+                log_error!("Failed to convert {}: {:?}", file_path.display(), e);
+            } else {
+                log_info!("Conversion completed in {:.2}s: {:?}", start_time.elapsed().as_secs_f32(), file_path);
             }
         }
-    }
+    });
 
-    info!("Conversion process complete!");
+    log_info!("Conversion process complete!");
     Ok(())
 }
 
-fn process_file(
-    input_path: &Path,
-    output_dir: &Path,
-    cancel_flag: &Arc<Mutex<bool>>,
-) -> Result<()> {
-    let file = File::open(input_path)
-        .context("Failed to open input file")?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
-
-    let probed = get_probe().format(
-        &hint,
-        mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
-    ).context("Failed to probe media format")?;
-
-    let mut format = probed.format;
-    let track = format.default_track()
-        .ok_or_else(|| anyhow::anyhow!("No default track found"))?;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .context("Failed to create decoder")?;
-
+fn convert_with_ffmpeg(input_path: &Path, output_dir: &Path, cancel_flag: &Arc<Mutex<bool>>) -> Result<()> {
     let output_filename = input_path
         .file_stem()
         .ok_or_else(|| anyhow::anyhow!("Invalid input filename"))?
@@ -109,143 +79,55 @@ fn process_file(
         .into_owned() + ".wav";
     let output_path = output_dir.join(output_filename);
 
-    let mut writer = prepare_wav_writer(&output_path, 44100)
-        .context("Failed to prepare WAV writer")?;
+    log_info!("Initiating ffmpeg conversion for: {:?}", input_path);
+    let mut child = Command::new("ffmpeg")
+        .args(&[
+            "-i", input_path.to_str().unwrap(),
+            "-acodec", "pcm_s16le",
+            "-ac", "2",
+            "-ar", "44100",
+            "-y", // Overwrite output files without asking
+            output_path.to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn ffmpeg process")?;
 
-    let signal_spec = track.codec_params
-        .sample_rate
-        .map(|rate| SignalSpec::new(rate, track.codec_params.channels.unwrap_or_default()))
-        .ok_or_else(|| anyhow::anyhow!("Missing sample rate"))?;
-
-    info!("Decoding and converting: {:?}", input_path);
-    while let Ok(packet) = format.next_packet() {
+    let mut progress_logged = false;
+    while !child.try_wait()?.is_some() {
         if *cancel_flag.lock().unwrap() {
-            info!("Conversion cancelled by user.");
-            writer.finalize().context("Failed to finalize WAV file")?;
-            return Ok(());
+            log_info!("Cancelling ffmpeg process for: {:?}", input_path);
+            child.kill().context("Failed to kill ffmpeg process")?;
+            return Err(anyhow::anyhow!("Conversion cancelled for {:?}", input_path));
         }
 
-        let decoded = decoder.decode(&packet)
-            .context("Failed to decode packet")?;
-
-        process_audio_buffer(decoded, signal_spec, &mut writer)
-            .context("Failed to process audio buffer")?;
-    }
-
-    writer.finalize()
-        .context("Failed to finalize WAV file")?;
-
-    info!("Successfully converted: {:?}", input_path);
-    Ok(())
-}
-
-fn prepare_wav_writer(path: &Path, sample_rate: u32) -> Result<hound::WavWriter<BufWriter<File>>> {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-
-    let file = File::create(path)
-        .context("Failed to create output file")?;
-    let writer = hound::WavWriter::new(BufWriter::new(file), spec)
-        .context("Failed to create WAV writer")?;
-    Ok(writer)
-}
-
-fn process_audio_buffer(
-    buffer: AudioBufferRef<'_>,
-    signal_spec: SignalSpec,
-    writer: &mut hound::WavWriter<BufWriter<File>>,
-) -> Result<()> {
-    let mut sample_buf = SampleBuffer::<i16>::new(buffer.capacity() as u64, signal_spec);
-    sample_buf.copy_interleaved_ref(buffer);
-
-    let target_rate = 44100;
-    if signal_spec.rate != target_rate {
-        debug!("Resampling from {} Hz to {} Hz", signal_spec.rate, target_rate);
-        resample_audio(&sample_buf, signal_spec, target_rate, writer)?;
-    } else {
-        let samples = convert_to_stereo(&sample_buf, signal_spec.channels.count());
-        for sample in samples {
-            writer.write_sample(sample)
-                .context("Failed to write sample")?;
+        if let Some(stderr) = child.stderr.as_mut() {
+            let mut buffer = [0; 1024];
+            if let Ok(bytes_read) = stderr.read(&mut buffer) {
+                if bytes_read > 0 {
+                    let output = String::from_utf8_lossy(&buffer[..bytes_read]);
+                    if output.contains("time=") && !progress_logged {
+                        log_info!("ffmpeg progress for {:?}: {}", input_path, output);
+                        progress_logged = true; // Log progress once to avoid spam
+                    }
+                }
+            }
         }
+        std::thread::sleep(std::time::Duration::from_millis(100)); // Poll every 100ms
     }
 
-    Ok(())
-}
-
-fn convert_to_stereo(buffer: &SampleBuffer<i16>, channels: usize) -> Vec<i16> {
-    if channels == 1 {
-        buffer.samples()
-            .iter()
-            .flat_map(|s| [*s, *s])
-            .collect::<Vec<i16>>()
-    } else {
-        buffer.samples().to_vec()
-    }
-}
-
-fn resample_audio(
-    buffer: &SampleBuffer<i16>,
-    signal_spec: SignalSpec,
-    target_rate: u32,
-    writer: &mut hound::WavWriter<BufWriter<File>>,
-) -> Result<()> {
-    let original_rate = signal_spec.rate;
-    let channels = signal_spec.channels.count();
-    let ratio = target_rate as f64 / original_rate as f64;
-
-    let mut resampler = SincFixedIn::<f64>::new(
-        ratio,
-        2.0,
-        SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            oversampling_factor: 256,
-            window: WindowFunction::BlackmanHarris2,
-            interpolation: SincInterpolationType::Linear,
-        },
-        buffer.samples().len() / channels,
-        channels,
-    ).context("Failed to create resampler")?;
-
-    let samples_f64: Vec<f64> = buffer.samples()
-        .iter()
-        .map(|s| f64::from(*s) / f64::from(i16::MAX))
-        .collect();
-
-    let input = if channels == 1 {
-        vec![samples_f64]
-    } else {
-        let left = samples_f64.iter().step_by(2).copied().collect::<Vec<_>>();
-        let right = samples_f64.iter().skip(1).step_by(2).copied().collect::<Vec<_>>();
-        vec![left, right]
-    };
-
-    let resampled = resampler.process(&input, None)
-        .context("Resampling failed")?;
-
-    let resampled_i16: Vec<i16> = if channels == 1 {
-        resampled[0]
-            .iter()
-            .flat_map(|s| [(s * f64::from(i16::MAX)).round() as i16; 2])
-            .collect()
-    } else {
-        resampled[0]
-            .iter()
-            .zip(resampled[1].iter())
-            .flat_map(|(l, r)| [(l * f64::from(i16::MAX)).round() as i16, (r * f64::from(i16::MAX)).round() as i16])
-            .collect()
-    };
-
-    for sample in &resampled_i16 { // Use reference to avoid move
-        writer.write_sample(*sample)
-            .context("Failed to write sample")?;
+    let status = child.wait().context("Failed to wait for ffmpeg process")?;
+    if !status.success() {
+        let stderr = child.stderr.and_then(|mut s| {
+            let mut buf = String::new();
+            use std::io::Read;
+            let _ = s.read_to_string(&mut buf);
+            Some(buf)
+        }).unwrap_or_else(|| "No stderr available".to_string());
+        return Err(anyhow::anyhow!("ffmpeg failed: {}", stderr));
     }
 
-    debug!("Resampling completed for {} samples", resampled_i16.len());
+    log_debug!("ffmpeg output for {:?}: {:?}", input_path, child.stdout);
     Ok(())
 }
