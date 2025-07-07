@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::io::BufWriter;
 
 use anyhow::{Context, Result};
+use log::{debug, error, info, warn};
 use rubato::{Resampler, SincFixedIn, WindowFunction, SincInterpolationParameters, SincInterpolationType};
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer, SignalSpec};
 use symphonia::core::codecs::DecoderOptions;
@@ -12,30 +13,65 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::get_probe;
+use walkdir::WalkDir;
 
-pub fn convert_files(files: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Result<()> {
-    if files.is_empty() {
+pub fn convert_files(paths: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Result<()> {
+    if paths.is_empty() {
         return Ok(());
     }
 
-    let parent_folder = files[0].parent().unwrap_or_else(|| Path::new("."));
-    let output_folder = parent_folder.join("CDDA_Converted");
-    fs::create_dir_all(&output_folder)
-        .context("Failed to create output directory")?;
-
-    for file_path in files {
+    for path in paths {
         if *cancel_flag.lock().unwrap() {
-            println!("Conversion cancelled by user.");
+            info!("Conversion cancelled by user.");
             break;
         }
 
-        println!("Processing: {:?}", file_path);
-        if let Err(e) = process_file(&file_path, &output_folder, &cancel_flag) {
-            eprintln!("Failed to process {}: {:?}", file_path.display(), e);
+        let files_to_process = if path.is_dir() {
+            info!("Processing folder: {:?}", path);
+            let mut files = Vec::new();
+            for entry in WalkDir::new(&path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let file_path = entry.path();
+                if file_path.extension().and_then(|s| s.to_str()) == Some("mp3") {
+                    files.push(file_path.to_path_buf());
+                }
+            }
+            files
+        } else if path.extension().and_then(|s| s.to_str()) == Some("mp3") {
+            info!("Processing single file: {:?}", path);
+            vec![path]
+        } else {
+            warn!("Skipping non-MP3 file or directory: {:?}", path);
+            continue;
+        };
+
+        if files_to_process.is_empty() {
+            warn!("No MP3 files found in {:?}", path);
+            continue;
+        }
+
+        let parent_folder = path.parent().unwrap_or_else(|| Path::new("."));
+        let output_folder = parent_folder.join("CDDA_Converted");
+        fs::create_dir_all(&output_folder)
+            .context("Failed to create output directory")?;
+
+        for file_path in files_to_process {
+            if *cancel_flag.lock().unwrap() {
+                info!("Conversion cancelled by user.");
+                break;
+            }
+
+            info!("Starting conversion of: {:?}", file_path);
+            if let Err(e) = process_file(&file_path, &output_folder, &cancel_flag) {
+                error!("Failed to process {}: {:?}", file_path.display(), e);
+            }
         }
     }
 
-    println!("Conversion complete!");
+    info!("Conversion process complete!");
     Ok(())
 }
 
@@ -81,9 +117,10 @@ fn process_file(
         .map(|rate| SignalSpec::new(rate, track.codec_params.channels.unwrap_or_default()))
         .ok_or_else(|| anyhow::anyhow!("Missing sample rate"))?;
 
+    info!("Decoding and converting: {:?}", input_path);
     while let Ok(packet) = format.next_packet() {
         if *cancel_flag.lock().unwrap() {
-            println!("Conversion cancelled by user.");
+            info!("Conversion cancelled by user.");
             writer.finalize().context("Failed to finalize WAV file")?;
             return Ok(());
         }
@@ -98,7 +135,7 @@ fn process_file(
     writer.finalize()
         .context("Failed to finalize WAV file")?;
 
-    println!("Completed: {:?}", input_path);
+    info!("Successfully converted: {:?}", input_path);
     Ok(())
 }
 
@@ -118,15 +155,16 @@ fn prepare_wav_writer(path: &Path, sample_rate: u32) -> Result<hound::WavWriter<
 }
 
 fn process_audio_buffer(
-    buffer: AudioBufferRef<'_>, // Changed from &AudioBufferRef<'_> to AudioBufferRef<'_>
+    buffer: AudioBufferRef<'_>,
     signal_spec: SignalSpec,
     writer: &mut hound::WavWriter<BufWriter<File>>,
 ) -> Result<()> {
     let mut sample_buf = SampleBuffer::<i16>::new(buffer.capacity() as u64, signal_spec);
-    sample_buf.copy_interleaved_ref(buffer); // Now works with owned buffer
+    sample_buf.copy_interleaved_ref(buffer);
 
     let target_rate = 44100;
     if signal_spec.rate != target_rate {
+        debug!("Resampling from {} Hz to {} Hz", signal_spec.rate, target_rate);
         resample_audio(&sample_buf, signal_spec, target_rate, writer)?;
     } else {
         let samples = convert_to_stereo(&sample_buf, signal_spec.channels.count());
@@ -182,7 +220,6 @@ fn resample_audio(
     let input = if channels == 1 {
         vec![samples_f64]
     } else {
-        // Split stereo channels
         let left = samples_f64.iter().step_by(2).copied().collect::<Vec<_>>();
         let right = samples_f64.iter().skip(1).step_by(2).copied().collect::<Vec<_>>();
         vec![left, right]
@@ -194,7 +231,7 @@ fn resample_audio(
     let resampled_i16: Vec<i16> = if channels == 1 {
         resampled[0]
             .iter()
-            .flat_map(|s| [(s * f64::from(i16::MAX)).round() as i16; 2]) // Duplicate for stereo
+            .flat_map(|s| [(s * f64::from(i16::MAX)).round() as i16; 2])
             .collect()
     } else {
         resampled[0]
@@ -209,5 +246,6 @@ fn resample_audio(
             .context("Failed to write sample")?;
     }
 
+    debug!("Resampling completed for {} samples", resampled_i16.len());
     Ok(())
 }

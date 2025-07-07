@@ -6,6 +6,7 @@ use single_instance::SingleInstance;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use env_logger;
 
 struct ConverterApp {
     selected_files: Vec<PathBuf>,
