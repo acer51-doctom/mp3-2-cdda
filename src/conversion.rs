@@ -1,4 +1,4 @@
-use crate::logging::*; // Import all macros from logging module
+// No explicit macro import needed; rely on #[macro_use] in main.rs
 
 use std::fs;
 use std::path::{Path, PathBuf};

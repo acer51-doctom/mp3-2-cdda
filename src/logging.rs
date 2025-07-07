@@ -1,4 +1,4 @@
-use log::{LevelFilter};
+use log::LevelFilter;
 use env_logger::Builder;
 use std::io::Write;
 
@@ -14,46 +14,46 @@ pub fn initialize_logger() {
                 record.args()
             )
         })
-        .filter(None, LevelFilter::Info) // Default to Info level; use RUST_LOG to override
+        .filter(None, LevelFilter::Info) // Default to Info; override with RUST_LOG
         .init();
 }
 
 #[macro_export]
 macro_rules! log_info {
     ($msg:expr) => {
-        info!(target: "mp32cdda", $msg);
+        log::info!(target: "mp32cdda", $msg);
     };
     ($fmt:expr, $($arg:tt)*) => {
-        info!(target: "mp32cdda", $fmt, $($arg)*);
+        log::info!(target: "mp32cdda", $fmt, $($arg)*);
     };
 }
 
 #[macro_export]
 macro_rules! log_debug {
     ($msg:expr) => {
-        debug!(target: "mp32cdda", $msg);
+        log::debug!(target: "mp32cdda", $msg);
     };
     ($fmt:expr, $($arg:tt)*) => {
-        debug!(target: "mp32cdda", $fmt, $($arg)*);
+        log::debug!(target: "mp32cdda", $fmt, $($arg)*);
     };
 }
 
 #[macro_export]
 macro_rules! log_warn {
     ($msg:expr) => {
-        warn!(target: "mp32cdda", $msg);
+        log::warn!(target: "mp32cdda", $msg);
     };
     ($fmt:expr, $($arg:tt)*) => {
-        warn!(target: "mp32cdda", $fmt, $($arg)*);
+        log::warn!(target: "mp32cdda", $fmt, $($arg)*);
     };
 }
 
 #[macro_export]
 macro_rules! log_error {
     ($msg:expr) => {
-        error!(target: "mp32cdda", $msg);
+        log::error!(target: "mp32cdda", $msg);
     };
     ($fmt:expr, $($arg:tt)*) => {
-        error!(target: "mp32cdda", $fmt, $($arg)*);
+        log::error!(target: "mp32cdda", $fmt, $($arg)*);
     };
 }

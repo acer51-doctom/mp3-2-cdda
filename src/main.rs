@@ -165,7 +165,7 @@ fn main() {
     if let Err(e) = eframe::run_native(
         "MP3 to CDDA Converter",
         options,
-        Box::new(|_cc| Box::new(ConverterApp::default())),
+        Box::new(|_cc| Ok(Box::new(ConverterApp::default()))),
     ) {
         log_error!("Failed to run eframe application: {:?}", e);
         std::process::exit(1);
