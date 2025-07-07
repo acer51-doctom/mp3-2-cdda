@@ -42,7 +42,7 @@ pub fn convert_files(paths: Vec<PathBuf>, cancel_flag: Arc<Mutex<bool>>) -> Resu
             files
         } else if path.extension().and_then(|s| s.to_str()) == Some("mp3") {
             info!("Processing single file: {:?}", path);
-            vec![path]
+            vec![path.clone()] // Clone path to avoid move
         } else {
             warn!("Skipping non-MP3 file or directory: {:?}", path);
             continue;
@@ -241,8 +241,8 @@ fn resample_audio(
             .collect()
     };
 
-    for sample in resampled_i16 {
-        writer.write_sample(sample)
+    for sample in &resampled_i16 { // Use reference to avoid move
+        writer.write_sample(*sample)
             .context("Failed to write sample")?;
     }
 

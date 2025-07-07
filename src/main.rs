@@ -151,6 +151,7 @@ impl ConverterApp {
 }
 
 fn main() {
+    env_logger::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([400.0, 500.0])
