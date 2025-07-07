@@ -1,4 +1,6 @@
+#[macro_use]
 mod conversion;
+#[macro_use]
 mod logging;
 
 use eframe::{egui, App, Frame};
@@ -154,9 +156,8 @@ fn main() {
     logging::initialize_logger(); // Initialize custom logger
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 500.0])
-            .with_min_inner_size([300.0, 400.0]),
+        initial_window_size: Some(egui::vec2(400.0, 500.0)), // Replaced viewport with initial_window_size
+        min_window_size: Some(egui::vec2(300.0, 400.0)),
         ..Default::default()
     };
 
